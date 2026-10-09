@@ -1,0 +1,164 @@
+-- LocalScript inside StarterPlayerScripts
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ContentProvider = game:GetService("ContentProvider")
+
+local LocalPlayer = Players.LocalPlayer
+local SPEED_BOOST_PER_PERSON = 2.5
+local DETECTION_RANGE = 30
+
+-- Asset IDs
+local TEXTURE_ID = "rbxassetid://106542757784921"
+local SOUND_ASSET_ID = "rbxassetid://136873326197504"
+
+-- Audio Configuration
+local SLOW_INTRO_DURATION = 7
+local INTRO_SPEED_BOOST = 1.3
+local NORMAL_SPEED = 1.0
+
+-- Single global Audio Player instance
+local audioPlayer = Instance.new("Sound")
+audioPlayer.Name = "ProximityAudio"
+audioPlayer.SoundId = SOUND_ASSET_ID
+audioPlayer.Volume = 2.3
+audioPlayer.RollOffMaxDistance = 100
+audioPlayer.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+-- Track highlighted targets
+local activeTrackers = {} -- Key: Player, Value: {Highlight, Billboard}
+local lastBoostAmount = 0
+
+-- Preload assets safely
+task.spawn(function()
+	pcall(function()
+		ContentProvider:PreloadAsync({audioPlayer})
+	end)
+end)
+
+-- Helper to apply Highlight and Billboard
+local function createEffects(targetCharacter)
+	local highlight = Instance.new("Highlight")
+	highlight.Name = "ProximityHighlight"
+	highlight.FillColor = Color3.fromRGB(255, 140, 0)
+	highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+	highlight.FillTransparency = 0.5
+	highlight.OutlineTransparency = 0
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.Adornee = targetCharacter
+	highlight.Parent = targetCharacter
+
+	-- Fixed size using Studs Offset & Scale for reliable rendering
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "ProximityBillboard"
+	billboard.Size = UDim2.new(3, 0, 3, 0) -- Scaled 3x3 studs in world space
+	billboard.AlwaysOnTop = true
+	billboard.LightInfluence = 0
+	billboard.ResetOnSpawn = false
+
+	local torso = targetCharacter:FindFirstChild("Torso") 
+		or targetCharacter:FindFirstChild("UpperTorso") 
+		or targetCharacter:FindFirstChild("HumanoidRootPart")
+
+	if torso then
+		billboard.Adornee = torso
+		billboard.Parent = torso
+	else
+		billboard.Parent = targetCharacter
+	end
+
+	local imageLabel = Instance.new("ImageLabel")
+	imageLabel.Name = "DecalLabel"
+	imageLabel.Size = UDim2.new(1, 0, 1, 0)
+	imageLabel.BackgroundTransparency = 1
+	imageLabel.Image = TEXTURE_ID
+	imageLabel.ImageTransparency = 0
+	imageLabel.Parent = billboard
+
+	return highlight, billboard
+end
+
+-- Cleanup function
+local function removeEffects(player)
+	if activeTrackers[player] then
+		if activeTrackers[player].Highlight then
+			activeTrackers[player].Highlight:Destroy()
+		end
+		if activeTrackers[player].Billboard then
+			activeTrackers[player].Billboard:Destroy()
+		end
+		activeTrackers[player] = nil
+	end
+end
+
+-- Main loop
+RunService.Heartbeat:Connect(function()
+	local myCharacter = LocalPlayer.Character
+	if not myCharacter or not myCharacter:FindFirstChild("HumanoidRootPart") then return end
+	
+	local myHumanoid = myCharacter:FindFirstChildOfClass("Humanoid")
+	local myHRP = myCharacter.HumanoidRootPart
+
+	local detectedCount = 0
+	local currentInRangePlayers = {}
+
+	for _, otherPlayer in pairs(Players:GetPlayers()) do
+		if otherPlayer ~= LocalPlayer and otherPlayer.Character then
+			local otherHRP = otherPlayer.Character:FindFirstChild("HumanoidRootPart")
+			local otherHumanoid = otherPlayer.Character:FindFirstChildOfClass("Humanoid")
+			
+			if otherHRP and otherHumanoid and otherHumanoid.Health > 0 then
+				local distance = (myHRP.Position - otherHRP.Position).Magnitude
+				if distance <= DETECTION_RANGE then
+					detectedCount = detectedCount + 1
+					currentInRangePlayers[otherPlayer] = true
+
+					-- Apply visual effects if not already present
+					if not activeTrackers[otherPlayer] then
+						local hl, bb = createEffects(otherPlayer.Character)
+						activeTrackers[otherPlayer] = {Highlight = hl, Billboard = bb}
+					end
+				end
+			end
+		end
+	end
+
+	-- Audio Control based on total detected targets
+	if detectedCount > 0 then
+		if not audioPlayer.IsPlaying then
+			audioPlayer.TimePosition = 0
+			audioPlayer.PlaybackSpeed = INTRO_SPEED_BOOST
+			audioPlayer:Play()
+		else
+			-- Dynamic speed adjustment during playback
+			if audioPlayer.TimePosition < SLOW_INTRO_DURATION then
+				audioPlayer.PlaybackSpeed = INTRO_SPEED_BOOST
+			else
+				audioPlayer.PlaybackSpeed = NORMAL_SPEED
+			end
+		end
+	else
+		-- Stop audio completely when no players are in radius
+		if audioPlayer.IsPlaying then
+			audioPlayer:Stop()
+		end
+	end
+
+	-- Remove effects for players who went out of range
+	for player, _ in pairs(activeTrackers) do
+		if not currentInRangePlayers[player] then
+			removeEffects(player)
+		end
+	end
+
+	-- Additive WalkSpeed calculation
+	if myHumanoid then
+		local newBoostAmount = detectedCount * SPEED_BOOST_PER_PERSON
+		local boostDifference = newBoostAmount - lastBoostAmount
+		
+		if boostDifference ~= 0 then
+			myHumanoid.WalkSpeed = math.max(0, myHumanoid.WalkSpeed + boostDifference)
+			lastBoostAmount = newBoostAmount
+		end
+	end
+end)
